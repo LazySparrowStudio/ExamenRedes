@@ -23,9 +23,9 @@ namespace HelloWorld
         private static readonly Color neutralColor = Color.gray;
 
         private int MaxTeamSize => HelloWorldManager.Instance.maxPlayersPerTeam;
-    
 
-    private readonly Vector3 centerPosition = new Vector3(0f, 1f, 0f); // Ajusta 1f según tu cápsula
+
+        private readonly Vector3 centerPosition = new Vector3(0f, 1f, 0f); // Ajusta 1f según tu cápsula
 
 
         public override void OnNetworkSpawn()
@@ -119,7 +119,7 @@ namespace HelloWorld
 
             if (Input.GetKeyDown(KeyCode.M))
             {
-                if (IsServer && !IsClient) // modo solo servidor
+                if (IsServer) // modo solo servidor
                 {
                     TeleportAllToCenterServerRpc();
                 }
@@ -143,16 +143,21 @@ namespace HelloWorld
             Position.Value = newPos;
         }
 
-        [ServerRpc]
+        [ServerRpc(RequireOwnership = false)]
         private void TeleportToCenterServerRpc(ServerRpcParams rpcParams = default)
         {
-            RemoveFromTeam(OwnerClientId);
-            Position.Value = centerPosition;
-            PlayerColor.Value = neutralColor;
+            ulong clientId = rpcParams.Receive.SenderClientId;
+
+            var player = NetworkManager.Singleton.SpawnManager
+                .GetPlayerNetworkObject(clientId)
+                .GetComponent<HelloWorldPlayer>();
+
+            player.RemoveFromTeam(clientId);
+            player.Position.Value = centerPosition;
+            player.PlayerColor.Value = neutralColor;
         }
 
         [ServerRpc(RequireOwnership = false)]
-        
         private void TeleportAllToCenterServerRpc()
         {
             foreach (var clientId in NetworkManager.Singleton.ConnectedClientsIds)
@@ -185,24 +190,24 @@ namespace HelloWorld
             }
         }
 
-private void TryJoinTeam(Team targetTeam, Color teamColor, ulong clientId, ref Vector3 position)
-{
-    if (playerTeam.Value == targetTeam)
-        return;
+        private void TryJoinTeam(Team targetTeam, Color teamColor, ulong clientId, ref Vector3 position)
+        {
+            if (playerTeam.Value == targetTeam)
+                return;
 
-    var manager = HelloWorldManager.Instance;
+            var manager = HelloWorldManager.Instance;
 
-    // Pide al manager que intente meter al jugador
-    manager.AddPlayerToTeam(clientId, targetTeam);
+            // Pide al manager que intente meter al jugador
+            manager.AddPlayerToTeam(clientId, targetTeam);
 
-    // El manager ya ajustará el color y actualizará playerTeam
-    playerTeam.Value = targetTeam;
-}
+            // El manager ya ajustará el color y actualizará playerTeam
+            playerTeam.Value = targetTeam;
+        }
 
-private void RemoveFromTeam(ulong clientId)
-{
-    HelloWorldManager.Instance.RemovePlayerFromAllTeams(clientId);
-    playerTeam.Value = Team.None;
-}
+        private void RemoveFromTeam(ulong clientId)
+        {
+            HelloWorldManager.Instance.RemovePlayerFromAllTeams(clientId);
+            playerTeam.Value = Team.None;
+        }
     }
 }

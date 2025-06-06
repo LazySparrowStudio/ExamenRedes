@@ -49,6 +49,7 @@ namespace HelloWorld
         public static HelloWorldManager Instance { get; private set; }
 
         private string maxPlayersInput;
+        public Vector3 posicionRespawn { get; private set; } = new Vector3(0f, 1f, 0f); // Ajusta según tu cápsula
 
         private void Awake()
         {
@@ -180,7 +181,7 @@ namespace HelloWorld
             res.Approved = true;
             res.CreatePlayerObject = true;
             res.PlayerPrefabHash = null;
-            res.Position = Vector3.zero;
+            res.Position = posicionRespawn; // Coloca al jugador en el centro al unirse
             res.Rotation = Quaternion.identity;
         }
 
