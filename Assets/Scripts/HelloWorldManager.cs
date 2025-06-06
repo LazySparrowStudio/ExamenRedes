@@ -6,15 +6,22 @@ using UnityEngine;
 
 namespace HelloWorld
 {
+    public enum Team
+    {
+        None,
+        Team1,
+        Team2
+    }
+
     /// <summary>
     /// Adjuntar al mismo GameObject que tu NetworkManager.
     /// Maneja la GUI del lobby, la aprobación de conexiones y la asignación de color por jugador.
+    /// Ahora con gestión básica de equipos.
     /// </summary>
     public class HelloWorldManager : MonoBehaviour
     {
         private NetworkManager m_NetworkManager;
 
-        // Lista “maestra” de 6 colores distintos que repartimos.
         private static readonly List<Color> MasterColors = new List<Color>
         {
             Color.red,
@@ -25,121 +32,166 @@ namespace HelloWorld
             Color.cyan
         };
 
-        // Pool de trabajo de donde tomamos y devolvemos colores.
         private readonly List<Color> _colorPool = new List<Color>();
-
-        // Asocia cada clientId con su color asignado.
         private readonly Dictionary<ulong, Color> _assignedColors = new Dictionary<ulong, Color>();
+
+        // Diccionario que asocia cada equipo con su lista de clientIds
+        public Dictionary<Team, List<ulong>> teamMembers = new Dictionary<Team, List<ulong>>()
+        {
+            { Team.Team1, new List<ulong>() },
+            { Team.None, new List<ulong>() },
+            { Team.Team2, new List<ulong>() }
+        };
+
+        // Max jugadores por equipo editable en GUI
+        public int maxPlayersPerTeam = 2;
+
+        public static HelloWorldManager Instance { get; private set; }
+
+        private string maxPlayersInput;
 
         private void Awake()
         {
+            Instance = this;
             m_NetworkManager = GetComponent<NetworkManager>();
 
-            // Inicializa el pool de trabajo con la lista maestra.
             _colorPool.AddRange(MasterColors);
 
-            // Activa la aprobación de conexión antes de enganchar los callbacks.
             m_NetworkManager.NetworkConfig.ConnectionApproval = true;
             m_NetworkManager.ConnectionApprovalCallback += ApproveOrReject;
             m_NetworkManager.OnClientConnectedCallback += OnClientConnected;
             m_NetworkManager.OnClientDisconnectCallback += OnClientDisconnected;
+
+            maxPlayersInput = maxPlayersPerTeam.ToString();
         }
 
         private void OnGUI()
         {
-            GUILayout.BeginArea(new Rect(10, 10, 300, 300));
+            Rect areaRect = new Rect(10, 10, 350, 400);
 
-            // Si aún no somos cliente ni servidor, mostramos los botones Host/Client/Server.
-            if (!m_NetworkManager.IsClient && !m_NetworkManager.IsServer)
+            // Dibuja fondo semitransparente negro para mejorar legibilidad
+            Color prevColor = GUI.color;
+            GUI.color = new Color(0, 0, 0, 0.5f);
+            GUI.Box(areaRect, GUIContent.none);
+            GUI.color = prevColor;
+
+            GUILayout.BeginArea(areaRect);
+
+            if (!m_NetworkManager.IsServer && !m_NetworkManager.IsClient)
             {
-                if (GUILayout.Button("Host")) m_NetworkManager.StartHost();
-                if (GUILayout.Button("Client")) m_NetworkManager.StartClient();
-                if (GUILayout.Button("Server")) m_NetworkManager.StartServer();
+                GUILayout.Label("Iniciar modo:");
+
+                if (GUILayout.Button("Host"))
+                    m_NetworkManager.StartHost();
+
+                if (GUILayout.Button("Client"))
+                    m_NetworkManager.StartClient();
+
+                if (GUILayout.Button("Server"))
+                    m_NetworkManager.StartServer();
             }
-            else
+            else if (m_NetworkManager.IsServer)
             {
-                // Si ya estamos en modo red, mostramos transporte y modo actual.
-                var mode = m_NetworkManager.IsHost ? "Host"
-                         : m_NetworkManager.IsServer ? "Server"
-                                                     : "Client";
-                GUILayout.Label("Transporte: " +
-                    m_NetworkManager.NetworkConfig.NetworkTransport.GetType().Name);
-                GUILayout.Label("Modo: " + mode);
+                GUILayout.Label("Equipos y Jugadores");
 
-                // Botón “Move”: el servidor mueve a todos; el cliente solicita su propio movimiento.
-                if (GUILayout.Button(
-                    m_NetworkManager.IsServer && !m_NetworkManager.IsClient
-                        ? "Move"
-                        : "Request Position Change"))
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Max Jugadores por Equipo: ", GUILayout.Width(180));
+                maxPlayersInput = GUILayout.TextField(maxPlayersInput, GUILayout.Width(50));
+                if (GUILayout.Button("Aplicar", GUILayout.Width(60)))
                 {
-                    if (m_NetworkManager.IsServer && !m_NetworkManager.IsClient)
+                    if (int.TryParse(maxPlayersInput, out int newMax) && newMax > 0)
                     {
-                        // Servidor: iterar todos los clientes conectados
-                        foreach (ulong uid in m_NetworkManager.ConnectedClientsIds)
-                        {
-                            var netObj = m_NetworkManager.SpawnManager
-                                .GetPlayerNetworkObject(uid);
-                            netObj.GetComponent<HelloWorldPlayer>().Move();
-                        }
+                        maxPlayersPerTeam = newMax;
                     }
                     else
                     {
-                        // Cliente: solo solicita en el jugador local
-                        var local = m_NetworkManager.SpawnManager
-                            .GetLocalPlayerObject()
-                            .GetComponent<HelloWorldPlayer>();
-                        local.Move();
+                        Debug.LogWarning("Valor inválido para máximo jugadores.");
                     }
                 }
+                GUILayout.EndHorizontal();
 
-                // Botón “Change Color”: solo mostrado/ejecutable en clientes (incluido el host como cliente).
-                if (m_NetworkManager.IsClient)
-                {
-                    if (GUILayout.Button("Change Color"))
-                    {
-                        var local = m_NetworkManager.SpawnManager
-                            .GetLocalPlayerObject()
-                            .GetComponent<HelloWorldPlayer>();
-                        local.RequestColorChangeServerRpc();
-                    }
-                }
+                GUILayout.Space(10);
+
+                GUILayout.Label("Equipo 1 (Izquierda):");
+                DisplayTeamPlayers(Team.Team1);
+
+                GUILayout.Space(10);
+
+                GUILayout.Label("Centro (Sin equipo):");
+                DisplayTeamPlayers(Team.None);
+
+                GUILayout.Space(10);
+
+                GUILayout.Label("Equipo 2 (Derecha):");
+                DisplayTeamPlayers(Team.Team2);
+            }
+            else
+            {
+                GUILayout.Label("Conectado como cliente...");
             }
 
             GUILayout.EndArea();
         }
 
-        /// <summary>
-        /// Callback de aprobación de conexión: rechaza si ya hay ≥6 jugadores; de lo contrario acepta.
-        /// </summary>
+        private void DisplayTeamPlayers(Team team)
+        {
+            bool foundAny = false;
+
+            foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
+            {
+                var playerObj = NetworkManager.Singleton.SpawnManager.GetPlayerNetworkObject(clientId);
+                if (playerObj == null) continue;
+
+                var player = playerObj.GetComponent<HelloWorldPlayer>();
+                if (player == null) continue;
+
+                if (player.playerTeam.Value == team)
+                {
+                    foundAny = true;
+
+                    Color col = player.PlayerColor.Value;
+
+                    GUILayout.BeginHorizontal();
+                    GUI.color = col;
+                    GUILayout.Box("", GUILayout.Width(20), GUILayout.Height(20));
+                    GUI.color = Color.white;
+                    GUILayout.Label($"Client {clientId}", GUILayout.Width(120));
+                    GUILayout.EndHorizontal();
+                }
+            }
+
+            if (!foundAny)
+            {
+                GUILayout.Label(" - Vacío -");
+            }
+        }
+
+
         private void ApproveOrReject(NetworkManager.ConnectionApprovalRequest req, NetworkManager.ConnectionApprovalResponse res)
         {
+            // Limite total = suma equipos y neutros? Aquí solo limita por colores disponibles
             if (_assignedColors.Count >= MasterColors.Count)
             {
                 res.Approved = false;
-                res.Reason = "Lobby lleno (máx. 6 jugadores).";
+                res.Reason = "Lobby lleno (máx. " + MasterColors.Count + " jugadores).";
                 return;
             }
 
             res.Approved = true;
             res.CreatePlayerObject = true;
-            res.PlayerPrefabHash = null;            // usa el prefab por defecto
-            res.Position = Vector3.zero;    // posición de spawn
+            res.PlayerPrefabHash = null;
+            res.Position = Vector3.zero;
             res.Rotation = Quaternion.identity;
         }
 
-        /// <summary>
-        /// Ejecutado en el servidor cuando un cliente nuevo es aprobado y conectado.
-        /// Asigna a ese cliente un color libre.
-        /// </summary>
         private void OnClientConnected(ulong clientId)
         {
             AssignNewColor(clientId);
+
+            // Nuevo jugador empieza sin equipo (centro)
+            AddPlayerToTeam(clientId, Team.None);
         }
 
-        /// <summary>
-        /// Ejecutado en el servidor cuando un cliente se desconecta.
-        /// Recupera su color y lo devuelve al pool.
-        /// </summary>
         private void OnClientDisconnected(ulong clientId)
         {
             if (_assignedColors.TryGetValue(clientId, out var color))
@@ -147,40 +199,85 @@ namespace HelloWorld
                 _assignedColors.Remove(clientId);
                 _colorPool.Add(color);
             }
+
+            RemovePlayerFromAllTeams(clientId);
         }
 
-        /// <summary>
-        /// Helper en el servidor: recupera color antiguo,
-        /// toma el siguiente libre, guarda la asignación
-        /// y escribe directamente en el NetworkVariable del jugador.
-        /// </summary>
         public void AssignNewColor(ulong clientId)
         {
-            // 1) Si ya tenía un color, lo devuelve al pool.
             if (_assignedColors.TryGetValue(clientId, out var old))
             {
                 _colorPool.Add(old);
             }
 
-            // 2) Protección.
             if (_colorPool.Count == 0)
             {
                 Debug.LogWarning("¡No hay colores libres para asignar!");
                 return;
             }
 
-            // 3) Extrae un nuevo color del pool.
             Color newColor = _colorPool[0];
             _colorPool.RemoveAt(0);
 
-            // 4) Registra la asignación.
             _assignedColors[clientId] = newColor;
 
-            // 5) Obtiene el objeto del jugador y escribe directamente en su NetworkVariable.
             var player = m_NetworkManager.SpawnManager
                 .GetPlayerNetworkObject(clientId)
                 .GetComponent<HelloWorldPlayer>();
+
             player.PlayerColor.Value = newColor;
+        }
+
+        // Añade jugador a equipo (y elimina de otros equipos)
+        public void AddPlayerToTeam(ulong clientId, Team team)
+        {
+            RemovePlayerFromAllTeams(clientId);
+
+            if (!teamMembers.ContainsKey(team))
+                teamMembers[team] = new List<ulong>();
+
+            if (team == Team.Team1 || team == Team.Team2)
+            {
+                if (teamMembers[team].Count >= maxPlayersPerTeam)
+                {
+                    Debug.Log($"Equipo {team} lleno, no se añade el jugador {clientId}");
+                    AddPlayerToTeam(clientId, Team.None); // Si está lleno, vuelve al centro
+                    return;
+                }
+            }
+
+            teamMembers[team].Add(clientId);
+
+            // Cambia color en el jugador según equipo
+            var player = m_NetworkManager.SpawnManager
+                .GetPlayerNetworkObject(clientId)
+                .GetComponent<HelloWorldPlayer>();
+
+            switch (team)
+            {
+                case Team.Team1:
+                    player.PlayerColor.Value = Color.blue;
+                    break;
+                case Team.Team2:
+                    player.PlayerColor.Value = new Color(1f, 0.5f, 0f); // naranja
+                    break;
+                case Team.None:
+                default:
+                    player.PlayerColor.Value = Color.gray;
+                    break;
+            }
+        }
+
+        // Elimina jugador de todos los equipos
+        public void RemovePlayerFromAllTeams(ulong clientId)
+        {
+            foreach (var team in teamMembers.Keys.ToList())
+            {
+                if (teamMembers[team].Contains(clientId))
+                {
+                    teamMembers[team].Remove(clientId);
+                }
+            }
         }
     }
 }

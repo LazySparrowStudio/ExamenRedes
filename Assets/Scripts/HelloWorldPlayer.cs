@@ -1,4 +1,5 @@
 // HelloWorldPlayer.cs
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -15,12 +16,25 @@ namespace HelloWorld
         // =====================================================
         public NetworkVariable<Vector3> Position = new NetworkVariable<Vector3>();
 
+        public NetworkVariable<Team> playerTeam = new NetworkVariable<Team>(Team.None);
+
+        private static readonly Color team1Color = Color.blue;
+        private static readonly Color team2Color = new Color(1.0f, 0.5f, 0f); // naranja
+        private static readonly Color neutralColor = Color.gray;
+
+        private int MaxTeamSize => HelloWorldManager.Instance.maxPlayersPerTeam;
+    
+
+    private readonly Vector3 centerPosition = new Vector3(0f, 1f, 0f); // Ajusta 1f según tu cápsula
+
+
         public override void OnNetworkSpawn()
         {
             // Si este cliente es el propietario, solicita un Move inicial
             if (IsOwner)
             {
                 Move();
+                PlayerColor.Value = neutralColor;
             }
 
             // Engancha el callback de cambio de color (ver más abajo)
@@ -87,5 +101,108 @@ namespace HelloWorld
             renderer.material = new Material(renderer.sharedMaterial);
             renderer.material.color = newColor;
         }
+        //---------- MOVIMIENTO DEL JUGADOR AWSD ----------
+        private void FixedUpdate()
+        {
+            if (!IsOwner) return; // Solo el jugador local puede controlar su movimiento
+
+            Vector3 direction = new Vector3(
+                Input.GetKey(KeyCode.D) ? 1 : Input.GetKey(KeyCode.A) ? -1 : 0,
+                0,
+                Input.GetKey(KeyCode.W) ? 1 : Input.GetKey(KeyCode.S) ? -1 : 0
+            );
+
+            if (direction != Vector3.zero)
+            {
+                MoveRequestServerRpc(direction.normalized);
+            }
+
+            if (Input.GetKeyDown(KeyCode.M))
+            {
+                if (IsServer && !IsClient) // modo solo servidor
+                {
+                    TeleportAllToCenterServerRpc();
+                }
+                else
+                {
+                    TeleportToCenterServerRpc();
+                }
+            }
+        }
+        [ServerRpc]
+        private void MoveRequestServerRpc(Vector3 direction)
+        {
+            float speed = 3f;
+            Vector3 newPos = transform.position + direction * speed * Time.fixedDeltaTime;
+
+            newPos.x = Mathf.Clamp(newPos.x, -5f, 5f);
+            newPos.z = Mathf.Clamp(newPos.z, -5f, 5f);
+
+            UpdateTeamByPosition(newPos, OwnerClientId);
+
+            Position.Value = newPos;
+        }
+
+        [ServerRpc]
+        private void TeleportToCenterServerRpc(ServerRpcParams rpcParams = default)
+        {
+            RemoveFromTeam(OwnerClientId);
+            Position.Value = centerPosition;
+            PlayerColor.Value = neutralColor;
+        }
+
+        [ServerRpc(RequireOwnership = false)]
+        
+        private void TeleportAllToCenterServerRpc()
+        {
+            foreach (var clientId in NetworkManager.Singleton.ConnectedClientsIds)
+            {
+                var player = NetworkManager.Singleton.SpawnManager
+                    .GetPlayerNetworkObject(clientId)
+                    .GetComponent<HelloWorldPlayer>();
+
+                player.RemoveFromTeam(clientId);
+                player.Position.Value = centerPosition;
+                player.PlayerColor.Value = neutralColor;
+            }
+        }
+
+        private void UpdateTeamByPosition(Vector3 position, ulong clientId)
+        {
+            if (position.x < -2)
+            {
+                TryJoinTeam(Team.Team1, team1Color, clientId, ref position);
+            }
+            else if (position.x > 2)
+            {
+                TryJoinTeam(Team.Team2, team2Color, clientId, ref position);
+            }
+            else
+            {
+                RemoveFromTeam(clientId);
+                PlayerColor.Value = neutralColor;
+                playerTeam.Value = Team.None;
+            }
+        }
+
+private void TryJoinTeam(Team targetTeam, Color teamColor, ulong clientId, ref Vector3 position)
+{
+    if (playerTeam.Value == targetTeam)
+        return;
+
+    var manager = HelloWorldManager.Instance;
+
+    // Pide al manager que intente meter al jugador
+    manager.AddPlayerToTeam(clientId, targetTeam);
+
+    // El manager ya ajustará el color y actualizará playerTeam
+    playerTeam.Value = targetTeam;
+}
+
+private void RemoveFromTeam(ulong clientId)
+{
+    HelloWorldManager.Instance.RemovePlayerFromAllTeams(clientId);
+    playerTeam.Value = Team.None;
+}
     }
 }
